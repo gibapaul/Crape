@@ -2,70 +2,56 @@ const scrapers = require('./scraper');
 const fs = require('fs');
 
 const scraperController = async (browserInstance) => {
-    const url = 'https://phongtro123.com/'; // Đặt URL vào đây
-    const indexes = [0, 1, 2, 3]; // Chỉ số các danh mục mà bạn muốn lấy (cập nhật để bắt đầu từ 0)
+    const url = 'https://digital-world-2.myshopify.com/';
     try {
-        let browser = await browserInstance;
-        let categories = await scrapers.scrapeCategory(browser, url);
-        
-        const selectedCategories = categories.filter((category, index) => indexes.includes(index));
-        console.log(selectedCategories);
+        const browser = await browserInstance;
+        console.log('Mở trình duyệt...');
 
-        // Lấy kết quả cho danh mục đầu tiên
-       /* if (selectedCategories.length > 0) {
-            let result1 = await scrapers.scraper(browser, selectedCategories[0].link);
+        // Lấy danh sách các danh mục
+        const categories = await scrapers.scrapeCategory(browser, url);
+        console.log('Danh sách danh mục:', categories);
 
-            // Ghi dữ liệu vào file JSON cho danh mục đầu tiên
-            fs.writeFile('chothuephongtro.json', JSON.stringify(result1, null, 2), (err) => {
-                if (err) {
-                    console.log('Ghi dữ liệu vào file thất bại: ' + err);
+        // Lấy tất cả các link sản phẩm từ các danh mục
+        const catePromises = categories.map(category => {
+            console.log('Truy cập vào danh mục:', category.link); // Log link category
+            return scrapers.scrapeItems(browser, category.link);
+        });
+
+        const itemLinks = await Promise.all(catePromises);
+        console.log('Liên kết sản phẩm:', itemLinks);
+
+        // Lấy thông tin từng sản phẩm từ các link
+        const productPromises = [];
+        for (const items of itemLinks) {
+            if (!Array.isArray(items)) {
+                console.error('Dữ liệu không hợp lệ, mong đợi mảng:', items);
+                continue; // Bỏ qua phần tử không hợp lệ
+            }
+
+            for (const link of items) {
+                if (link) { // Kiểm tra link không null hoặc undefined
+                    console.log('Truy cập vào sản phẩm:', link); // Log link product
+                    productPromises.push(scrapers.scraper(browser, link));
                 } else {
-                    console.log('Thêm dữ liệu thành công vào danhmuc1.json!');
+                    console.warn('Link sản phẩm không hợp lệ:', link);
                 }
-            });
-        }*/
-
-        // Lấy kết quả cho danh mục thứ hai
-        if (selectedCategories.length > 1) {
-            let result2 = await scrapers.scraper(browser, selectedCategories[1].link);
-
-            // Ghi dữ liệu vào file JSON cho danh mục thứ hai
-            fs.writeFile('nhachothue.json', JSON.stringify(result2, null, 2), (err) => {
-                if (err) {
-                    console.log('Ghi dữ liệu vào file thất bại: ' + err);
-                } else {
-                    console.log('Thêm dữ liệu thành công vào nhachothue.json!');
-                }
-            });
+            }
         }
 
-        // Lấy kết quả cho danh mục thứ ba
-        if (selectedCategories.length > 2) {
-            let result3 = await scrapers.scraper(browser, selectedCategories[2].link);
+        const results = await Promise.all(productPromises);
+        console.log('Dữ liệu sản phẩm:', results);
 
-            // Ghi dữ liệu vào file JSON cho danh mục thứ ba
-            fs.writeFile('chothuecanho.json', JSON.stringify(result3, null, 2), (err) => {
-                if (err) {
-                    console.log('Ghi dữ liệu vào file thất bại: ' + err);
-                } else {
-                    console.log('Thêm dữ liệu thành công vào chothuephongtro.json!');
-                }
-            });
-        }
+        // Ghi dữ liệu vào file JSON
+        fs.writeFile('product_data.json', JSON.stringify(results, null, 2), (err) => {
+            if (err) {
+                console.error('Ghi data vào file thất bại:', err);
+            } else {
+                console.log('Thêm dữ liệu thành công!');
+            }
+        });
 
-        // Lấy kết quả cho danh mục thứ tư
-        if (selectedCategories.length > 3) {
-            let result4 = await scrapers.scraper(browser, selectedCategories[3].link);
-
-            // Ghi dữ liệu vào file JSON cho danh mục thứ tư
-            fs.writeFile('chothuematbang.json', JSON.stringify(result4, null, 2), (err) => {
-                if (err) {
-                    console.log('Ghi dữ liệu vào file thất bại: ' + err);
-                } else {
-                    console.log('Thêm dữ liệu thành công vào danhmuc4.json!');
-                }
-            });
-        }
+        await browser.close(); // Đóng trình duyệt
+        console.log('Đã đóng trình duyệt');
 
     } catch (error) {
         console.error('Có lỗi xảy ra:', error);

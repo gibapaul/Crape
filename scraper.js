@@ -1,193 +1,158 @@
-const scrapeCategory = (browser, url) => new Promise(async (resolve, reject) => {
-    try {
-        let page = await browser.newPage();
-        console.log('>> Mở tab mới ...');
-        await page.goto(url);
-        console.log('>> Truy cập vào ... ' + url);
-        await page.waitForSelector('#webpage');
-        console.log('>> Web đã load ...');
+const puppeteer = require('puppeteer');
 
-        const dataCategory = await page.$$eval('#navbar-menu > ul > li', els => {
-            return els.map(el => ({
-                category: el.querySelector('a').innerText,
-                link: el.querySelector('a').href
-            }));
+// Hàm giúp đi tới URL với retry
+const gotoWithRetry = async (page, url, options = {}, retries = 3) => {
+    for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+            await page.goto(url, { ...options, timeout: 60000 });
+            return; // Thành công
+        } catch (error) {
+            console.error(`Attempt ${attempt + 1} to go to ${url} failed: ${error.message}`);
+            if (attempt === retries - 1) throw error; // Ném lỗi ở lần thử cuối
+        }
+    }
+};
+
+const scrapeCategory = (browser, url) => new Promise(async (resolve, reject) => {
+    let page;
+    try {
+        page = await browser.newPage();
+        console.log('>> Mở tab mới ...');
+        console.log('>> Đang truy cập vào URL:', url);
+        await gotoWithRetry(page, url, { waitUntil: 'networkidle2' });
+        console.log('>> Truy cập vào ... ' + url);
+        await page.waitForSelector('#shopify-section-all-collections');
+
+        const dataCategory = await page.$$eval('#shopify-section-all-collections > div.all-collections > div.sdcollections-content > ul.sdcollections-list > li', els => {
+            return els.map(el => {
+                const categoryName = el.querySelector('div.collection-name');
+                const linkElement = el.querySelector('a');
+                return {
+                    category: categoryName ? categoryName.innerText : 'Không có tên danh mục',
+                    link: linkElement ? linkElement.href : 'Không có link'
+                };
+            });
         });
 
-        await page.close();
-        console.log('>> Tab đã đóng');
+        console.log('Dữ liệu danh mục:', dataCategory);
         resolve(dataCategory);
     } catch (error) {
-        console.log('Lỗi ở scrape cate: ' + error);
+        console.error('Lỗi ở scrape cate: ', error);
+        console.error('Có lỗi xảy ra với URL:', url);
         reject(error);
+    } finally {
+        if (page) {
+            await page.close();
+            console.log('>> Tab đã đóng');
+        }
     }
 });
 
-const scraper = (browser, url) => new Promise(async (resolve, reject) => {
+const scrapeItems = async (browser, url) => {
+    const page = await browser.newPage();
     try {
-        let newPage = await browser.newPage();
+        console.log('>> Đang truy cập vào URL:', url);
+        await gotoWithRetry(page, url, { waitUntil: 'networkidle2' });
+        console.log('>> Web đã load ...');
+
+        const items = await page.$$eval('#collection-product-grid > div.grid-element', els => {
+            return els.map(el => {
+                const linkElement = el.querySelector('a.grid-view-item__link');
+                return linkElement ? linkElement.href : null; // Trả về null nếu không có link
+            }).filter(link => link !== null); // Lọc ra các giá trị null
+        });
+
+        return items; // Đảm bảo trả về mảng items
+    } catch (error) {
+        console.error('Lỗi ở scrape items:', error.message);
+        return []; // Trả về mảng rỗng khi có lỗi
+    } finally {
+        await page.close();
+        console.log('>> Tab đã đóng');
+    }
+};
+
+const scraper = (browser, url) => new Promise(async (resolve, reject) => {
+    let newPage;
+    try {
+        newPage = await browser.newPage();
         console.log('>> Đã mở tab mới ...');
-        await newPage.goto(url);
+        await gotoWithRetry(newPage, url, { waitUntil: 'networkidle2' });
         console.log('>> Đã truy cập vào trang ' + url);
-        await newPage.waitForSelector('#main');
+        await newPage.waitForSelector('#PageContainer');
         console.log('>> Đã load xong tag main ...');
 
         const scrapeData = {};
 
-        // Lấy header
-        const headerData = await newPage.$eval('header', (el) => ({
-            title: el.querySelector('h1').innerText,
-            description: el.querySelector('p') ? el.querySelector('p').innerText : 'Không có mô tả'
-        }));
-        scrapeData.header = headerData;
-
-        // Lấy link detail item
-        const detailLinks = await newPage.$$eval('#left-col > section.section-post-listing > ul > li', (els) => {
-            return els.map(el => el.querySelector('.post-meta > h3 > a').href);
+        // Lấy danh mục sản phẩm
+        scrapeData.category = await newPage.$$eval('nav.breadcrumb > a', els => {
+            return els.map(el => el.innerText);
         });
 
-        const detailDataArray = []; // Mảng lưu trữ detailData
+        // Lấy tên sản phẩm
+        scrapeData.name = await newPage.$eval('header.section-header h3', el => el.innerText || 'Không có tên');
 
-        const scraperDetail = async (link) => new Promise(async (resolve, reject) => {
-            try {
-                let pageDetail = await browser.newPage();
-                await pageDetail.goto(link);
-                await pageDetail.waitForSelector('#main');
+        // Lấy ảnh sản phẩm
+        scrapeData.thumb = await newPage.$eval('#ProductPhotoImg', el => el.src || 'Không có ảnh');
 
-                const detailData = {};
-
-                // Lấy hình ảnh
-                const images = await pageDetail.$$eval('#left-col > article > div.post-images > div > div.swiper-wrapper > div.swiper-slide img', (els) => {
-                    return els.map(el => el.src).filter(src => src !== undefined && src !== '');
-                });
-
-                detailData.images = images;
-                console.log('Hình ảnh đã lấy:', detailData.images);
-
-                // Lấy header detail
-                const header = await pageDetail.$eval('header.page-header', (el) => ({
-                    title: el.querySelector('h1 > a') ? el.querySelector('h1 > a').innerText : 'Không có tiêu đề',
-                    star: el.querySelector('h1 > span') ? el.querySelector('h1 > span').className : 'Không có đánh giá',
-                    class: {
-                        content: el.querySelector('p') ? el.querySelector('p').innerText : 'Không có nội dung',
-                        classType: el.querySelector('p > a > strong') ? el.querySelector('p > a > strong').innerText : 'Không có loại'
-                    },
-                    address: el.querySelector('address') ? el.querySelector('address').innerText : 'Không có địa chỉ',
-                    attributes: {
-                        price: el.querySelector('div.post-attributes > .price > span') ? el.querySelector('div.post-attributes > .price > span').innerText : 'Không có giá',
-                        acreage: el.querySelector('div.post-attributes > .acreage > span') ? el.querySelector('div.post-attributes > .acreage > span').innerText : 'Không có diện tích',
-                        published: el.querySelector('div.post-attributes > .published > span') ? el.querySelector('div.post-attributes > .published > span').innerText : 'Không có ngày phát hành',
-                        hashtag: el.querySelector('div.post-attributes > .hashtag > span') ? el.querySelector('div.post-attributes > .hashtag > span').innerText : 'Không có hashtag',
-                    }
-                }));
-
-                detailData.header = header;
-                console.log('Header chi tiết:', detailData.header);
-
-                // Thông tin mô tả
-                let mainContentHeader;
-                try {
-                    mainContentHeader = await pageDetail.$eval('#left-col > article.the-post > section.post-main-content > div.section-header > h2', el => el.innerText);
-                } catch (error) {
-                    console.log('Không tìm thấy tiêu đề mô tả:', error);
-                    mainContentHeader = 'Không có tiêu đề mô tả';
-                }
-
-                let mainContentContent;
-                try {
-                    mainContentContent = await pageDetail.$$eval('#left-col > article.the-post > section.post-main-content > section-content > p', els => els.map(el => el.innerText));
-                } catch (error) {
-                    console.log('Không tìm thấy nội dung mô tả:', error);
-                    mainContentContent = ['Không có nội dung'];
-                }
-
-                detailData.mainContent = {
-                    header: mainContentHeader,
-                    content: mainContentContent
-                };
-                console.log('Tiêu đề mô tả:', mainContentHeader);
-                console.log('Nội dung:', mainContentContent);
-
-                // Đặc điểm tin đăng
-                let overviewHeader;
-                try {
-                    overviewHeader = await pageDetail.$eval('#left-col > section.post-overview > div.section-header > h3', el => el.innerText);
-                } catch (error) {
-                    console.log('Không tìm thấy tiêu đề overview:', error);
-                    overviewHeader = 'Không có tiêu đề overview';
-                }
-
-                let overviewContent;
-                try {
-                    overviewContent = await pageDetail.$$eval('#left-col > section.post-overview > .section-content > table.table > tbody > tr', (els) => {
-                        return els.map(el => ({
-                            name: el.querySelector('td:first-child').innerText,
-                            content: el.querySelector('td:last-child').innerText
-                        }));
-                    });
-                } catch (error) {
-                    console.log('Không tìm thấy nội dung overview:', error);
-                    overviewContent = ['Không có nội dung'];
-                }
-
-                detailData.overview = {
-                    header: overviewHeader,
-                    content: overviewContent
-                };
-
-                console.log('Tiêu đề overview:', overviewHeader);
-                console.log('Nội dung overview:', overviewContent);
-
-                // Lấy thông tin liên hệ
-                let contactHeader;
-                try {
-                    contactHeader = await pageDetail.$eval('#left-col > article.the-post > section.post-contact', el => el.innerText);
-                } catch (error) {
-                    console.log('Không tìm thấy tiêu đề liên hệ:', error);
-                    contactHeader = 'Không có tiêu đề liên hệ';
-                }
-
-                let contactContent;
-                try {
-                    contactContent = await pageDetail.$$eval('#left-col > article.the-post > section.post-contact > .section-content > table.table > tbody > tr', els => els.map(el => el.innerText));
-                } catch (error) {
-                    console.log('Không tìm thấy nội dung liên hệ:', error);
-                    contactContent = ['Không có nội dung'];
-                }
-
-                detailData.contact = {
-                    header: contactHeader,
-                    content: contactContent
-                };
-                console.log('Thông tin liên hệ:', detailData.contact);
-
-                await pageDetail.close();
-                console.log('>> Đã đóng tab ' + link);
-                resolve(detailData);
-            } catch (error) {
-                console.log('Lấy data detail lỗi: ' + error);
-                reject(error);
-            }
+        scrapeData.images = await newPage.$$eval('#ProductThumbs > div.owl-wrapper-outer > div.owl-wrapper > div.owl-item a.product-single__thumbnail', els => {
+            return els.map(el => el.href);
         });
 
-        // Duyệt qua từng link chi tiết và lấy dữ liệu
-        for (let link of detailLinks) {
-            const detailData = await scraperDetail(link);
-            console.log('Dữ liệu chi tiết:', detailData);
-            detailDataArray.push(detailData); // Lưu trữ dữ liệu chi tiết vào mảng
-        }
+        // Lấy giá sản phẩm
+        scrapeData.price = await newPage.$eval('#ProductPrice span.money', el => el.innerText || 'Không có giá');
 
-        scrapeData.body = detailDataArray; // Gán mảng detailDataArray vào scrapeData.body
-        await newPage.close();
-        console.log('>> Trình duyệt đã đóng');
+        // Lấy mô tả sản phẩm
+        scrapeData.description = await newPage.$$eval('div.product-single__description > ul > li', els => {
+            return els.map(el => el.innerText || 'Không có mô tả');
+        });
+
+        // Lấy variants
+        const variants = await newPage.$$eval('form.product-single__form > div.product-form__item', (els) => {
+            return els.map(el => {
+                const label = el.querySelector('label.single-option-radio__label')?.innerText.trim() || 'Không có tên';
+                const variantLabels = el.querySelectorAll('fieldset.single-option-radio > label');
+                const values = Array.from(variantLabels).map(labelElement => labelElement.innerText.trim() || 'Không có giá trị');
+                return {
+                    label,
+                    variants: values.length > 0 ? values : ['Không có giá trị']
+                };
+            });
+        });
+        scrapeData.variants = variants;
+
+        // Lấy thông tin sản phẩm
+        const infomationTitles = await newPage.$$eval('#tabs-information > ul > li', (els) => {
+            return els.map(el => el.querySelector('a')?.innerText || 'Không có thông tin');
+        });
+
+        const desc = await newPage.$eval('#desc', el => el?.innerText || 'Không có mô tả');
+        const size = await newPage.$eval('#size', el => el?.innerText || 'Không có kích thước');
+        const delivery = await newPage.$eval('#delivery', el => el?.innerText || 'Không có giao hàng');
+        const payment = await newPage.$eval('#payment', el => el?.innerText || 'Không có thanh toán');
+
+        scrapeData.infomations = {
+            [infomationTitles[0]]: desc,
+            [infomationTitles[1]]: size,
+            [infomationTitles[2]]: delivery,
+            [infomationTitles[3]]: payment,
+        };
+
+        console.log('>> Dữ liệu sản phẩm:', scrapeData);
         resolve(scrapeData);
     } catch (error) {
-        console.log('Lỗi ở scraper: ' + error);
+        console.error('Lỗi ở scraper: ', error);
         reject(error);
+    } finally {
+        if (newPage) {
+            await newPage.close();
+            console.log('>> Trình duyệt đã đóng');
+        }
     }
 });
 
 module.exports = {
     scrapeCategory,
     scraper,
+    scrapeItems,
 };
